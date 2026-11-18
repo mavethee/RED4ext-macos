@@ -94,7 +94,11 @@ bool ProtectMemory(void* aAddress, size_t aSize, uint32_t aNewProtection, uint32
         }
     }
 
-    const kern_return_t kr = mach_vm_protect(task, alignedAddr, alignedSize, FALSE, prot);
+    kern_return_t kr = mach_vm_protect(task, alignedAddr, alignedSize, FALSE, prot);
+    if (kr != KERN_SUCCESS && (prot & VM_PROT_WRITE) != 0 && (prot & VM_PROT_COPY) == 0)
+    {
+        kr = mach_vm_protect(task, alignedAddr, alignedSize, FALSE, prot | VM_PROT_COPY);
+    }
     if (kr != KERN_SUCCESS)
     {
         spdlog::error("[Platform] mach_vm_protect failed at {:#x}: kr={}", alignedAddr, kr);

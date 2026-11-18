@@ -9,6 +9,10 @@ void EnableBackgroundModeIfRequested(); // Platform/Background.cpp
 
 __attribute__((constructor)) static void RED4extInit()
 {
+    // Clear DYLD_INSERT_LIBRARIES so child processes spawned by the game (e.g. system_profiler)
+    // don't attempt to load this arm64 dylib into arm64e system processes and abort.
+    unsetenv("DYLD_INSERT_LIBRARIES");
+
     try
     {
         const auto image = Image::Get();

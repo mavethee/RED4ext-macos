@@ -61,6 +61,15 @@ public:
 
         Log::trace("Restoring virtual functions for '{}' state at {}...", name, vtbl);
 
+#ifdef RED4EXT_PLATFORM_MACOS
+        if (m_origVtbl)
+        {
+            *reinterpret_cast<Func_t**>(aState) = m_origVtbl;
+            Log::trace("Virtual functions for '{}' state were restored successfully", name);
+            return true;
+        }
+        return false;
+#else
         if (SwapVFuncs(aState, m_onEnter.orig, m_onUpdate.orig, m_onExit.orig))
         {
             Log::trace("Virtual functions for '{}' state were restored successfully", name);
@@ -68,6 +77,7 @@ public:
         }
 
         return false;
+#endif
     }
 
     bool OnEnter(T* aState, RED4ext::CGameApplication* aApp)
@@ -129,6 +139,22 @@ private:
         auto name = aState->GetName();
         auto vtbl = *reinterpret_cast<Func_t**>(aState);
 
+#ifdef RED4EXT_PLATFORM_MACOS
+        // On macOS, static vtables in __DATA_CONST are mapped with maxprot = VM_PROT_READ.
+        // Instead of modifying read-only binary pages, replace the heap object's vptr with a hooked copy.
+        if (!m_hookedVtbl[0])
+        {
+            m_origVtbl = vtbl;
+            std::memcpy(m_hookedVtbl, vtbl, sizeof(m_hookedVtbl));
+            m_hookedVtbl[OnEnterSlot] = aOnEnter;
+            m_hookedVtbl[OnEnterSlot + 1] = aOnUpdate;
+            m_hookedVtbl[OnEnterSlot + 2] = aOnExit;
+        }
+
+        *reinterpret_cast<Func_t**>(aState) = m_hookedVtbl;
+        Log::trace("Virtual functions for '{}' state were replaced successfully (vptr redirect)", name);
+        return true;
+#else
         try
         {
             const auto addr = &vtbl[OnEnterSlot];
@@ -158,11 +184,6 @@ private:
 
             *onExit = aOnExit;
             Log::trace("'OnExit' function was changed successfully");
-
-#ifdef RED4EXT_PLATFORM_MACOS
-            // Invalidate instruction cache for ARM64 after vtable modification
-            sys_icache_invalidate(addr, size);
-#endif
         }
         catch (const MemoryProtection::Exception&)
         {
@@ -190,10 +211,13 @@ private:
         }
 
         return true;
+#endif
     }
 
     bool m_isAttached;
     FuncHook m_onEnter;
     FuncHook m_onUpdate;
     FuncHook m_onExit;
+    Func_t* m_origVtbl = nullptr;
+    Func_t m_hookedVtbl[32] = {};
 };

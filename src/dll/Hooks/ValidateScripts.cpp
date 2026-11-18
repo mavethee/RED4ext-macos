@@ -28,6 +28,32 @@ namespace
 {
 bool isAttached = false;
 
+using CreateScriptReportAndLoad_t = uint64_t (*)(void* a0, void* a1, uint32_t aFillErrors, void* aErrors, uint32_t aMaxErrors);
+uint64_t _CreateScriptReportAndLoad(void* a0, void* a1, uint32_t aFillErrors, void* aErrors, uint32_t aMaxErrors);
+Hook<CreateScriptReportAndLoad_t> CreateScriptReportAndLoad(
+    RED4ext::RelocFunc<CreateScriptReportAndLoad_t>(0x3c45e80),
+    &_CreateScriptReportAndLoad);
+
+uint64_t _CreateScriptReportAndLoad(void* a0, void* a1, uint32_t aFillErrors, void* aErrors, uint32_t aMaxErrors)
+{
+    Log::info("CreateScriptReportAndLoad: forcing aFillErrors = 1");
+    auto res = CreateScriptReportAndLoad(a0, a1, 1, aErrors, aMaxErrors);
+    auto* errors = reinterpret_cast<RED4ext::DynArray<RED4ext::CString>*>(aErrors);
+    if (errors)
+    {
+        Log::info("CreateScriptReportAndLoad: finished with res = {:#x}, error count = {}", res, errors->Size());
+        for (std::uint32_t i = 0; i < errors->Size(); ++i)
+        {
+            Log::error("ScriptReport [{}]: {}", i, (*errors)[i].c_str());
+        }
+    }
+    else
+    {
+        Log::info("CreateScriptReportAndLoad: finished with res = {:#x}, errors ptr is null", res);
+    }
+    return res;
+}
+
 bool _ScriptValidator_Validate(uint64_t self, uint64_t a1, RED4ext::ScriptReport& aReport);
 Hook<decltype(&_ScriptValidator_Validate)> ScriptValidator_Validate(Hashes::ScriptValidator_Validate,
                                                                     &_ScriptValidator_Validate);
@@ -41,6 +67,20 @@ bool _ScriptValidator_Validate(uint64_t self, uint64_t a1, RED4ext::ScriptReport
     for (std::uint32_t i = 0; i < std::max(aReport.errors->Size(), 1u) - 1; ++i)
     {
         auto message = (*aReport.errors)[i].c_str();
+
+        // Check if this error is an allowed Codeware resource wrapper type match:
+        // Codeware's ResourceRef maps to native rRef:<Type>
+        // Codeware's ResourceAsyncRef maps to native raRef:<Type>
+        // Codeware's CurveData maps to native CurveData:<Type>
+        if ((strstr(message, "type 'ResourceRef' does not match with the native one 'rRef:") != nullptr) ||
+            (strstr(message, "type 'ResourceAsyncRef' does not match with the native one 'raRef:") != nullptr) ||
+            (strstr(message, "type 'ResourceRef' does not match with the native one 'raRef:") != nullptr) ||
+            (strstr(message, "type 'CurveData") != nullptr && strstr(message, "does not match with the native one 'CurveData:") != nullptr))
+        {
+            Log::warn("Script validation warning (compatible wrapper type): {}", message);
+            continue;
+        }
+
         const auto error = ValidationError::FromString(message);
         validationErrors.push_back(error);
 
@@ -62,6 +102,16 @@ bool _ScriptValidator_Validate(uint64_t self, uint64_t a1, RED4ext::ScriptReport
         SHOW_MESSAGE_BOX_AND_EXIT_FILE_LINE(L"{}", message.value());
     }
 
+    if (validationErrors.empty() && incompatiblePlugins.empty())
+    {
+        Log::info("Script validation passed (compatible wrapper types permitted)");
+        if (aReport.errors)
+        {
+            aReport.errors->Clear();
+        }
+        return true;
+    }
+
     return result;
 }
 } // namespace
@@ -81,11 +131,13 @@ bool Hooks::ValidateScripts::Attach()
     }
 
     isAttached = result == NO_ERROR;
+    CreateScriptReportAndLoad.Attach();
     return isAttached;
 }
 
 bool Hooks::ValidateScripts::Detach()
 {
+    CreateScriptReportAndLoad.Detach();
     if (!isAttached)
     {
         return false;
